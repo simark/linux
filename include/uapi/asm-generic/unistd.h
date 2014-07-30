@@ -700,8 +700,11 @@ __SYSCALL(__NR_sched_getattr, sys_sched_getattr)
 #define __NR_renameat2 276
 __SYSCALL(__NR_renameat2, sys_renameat2)
 
+#define __NR_gbp_session_create 277
+__SYSCALL(__NR_gbp_session_create, sys_gbp_session_create)
+
 #undef __NR_syscalls
-#define __NR_syscalls 277
+#define __NR_syscalls 278
 
 /*
  * All syscalls below here should go away really,
