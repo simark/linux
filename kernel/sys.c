@@ -1833,6 +1833,42 @@ static int prctl_get_tid_address(struct task_struct *me, int __user **tid_addr)
 }
 #endif
 
+#ifdef CONFIG_UPROBES
+
+static int prctl_global_breakpoint(struct task_struct *me, int option,
+		unsigned long arg2)
+{
+	unsigned long mask;
+
+	mask = PR_GLOBAL_BREAKPOINT_EN | PR_GLOBAL_BREAKPOINT_EN_FORK;
+
+	switch (option) {
+	case PR_SET_GLOBAL_BREAKPOINT:
+		if (arg2 & ~mask)
+			return -EINVAL;
+		me->global_bp_flags = arg2;
+		return 0;
+
+	case PR_GET_GLOBAL_BREAKPOINT:
+		if (arg2)
+			return -EINVAL;
+		return me->global_bp_flags;
+
+	default:
+		return -EINVAL;
+	}
+}
+
+#else
+
+static int prctl_global_breakpoint(struct task_struct *me, int option,
+		unsigned long arg2)
+{
+	return -EINVAL;
+}
+
+#endif
+
 SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 		unsigned long, arg4, unsigned long, arg5)
 {
@@ -2010,6 +2046,12 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 		else
 			me->mm->def_flags &= ~VM_NOHUGEPAGE;
 		up_write(&me->mm->mmap_sem);
+		break;
+	case PR_SET_GLOBAL_BREAKPOINT:
+	case PR_GET_GLOBAL_BREAKPOINT:
+		if (arg3 || arg4 || arg5)
+			return -EINVAL;
+		error = prctl_global_breakpoint(me, option, arg2);
 		break;
 	default:
 		error = -EINVAL;
