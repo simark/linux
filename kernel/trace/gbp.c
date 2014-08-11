@@ -4,38 +4,14 @@
 #include <linux/slab.h>
 #include <linux/prctl.h>
 
+#include <linux/gbp.h>
+
 #define	GBP_ADD		_IOW('G', 32, struct gbp_information)
 #define	GBP_REMOVE	_IOW('G', 33, struct gbp_information)
 
-#define MAX_ENTRY_SLOTS	32
+LIST_HEAD(gbp_sessions);
 
-struct gbp_session {
-	struct mutex mutex;
-	struct list_head list;
-	unsigned long bp_ids;
-
-	unsigned long bp_slots;
-	struct task_struct *blocked_task[MAX_ENTRY_SLOTS];
-	spinlock_t entry_lock;
-	wait_queue_head_t waitq;
-};
-
-struct gbp_information {
-	int fd;
-	int ___pad0;
-	u64 offset;
-	char __pad1[16];
-};
-
-struct gbp_bp {
-	struct uprobe_consumer uc;
-	struct gbp_session *gbp_s;
-	unsigned int bp_id;
-
-	struct inode *inode;
-	unsigned long offset;
-	struct list_head node;
-};
+EXPORT_SYMBOL(gbp_sessions);
 
 static int gbp_handler(struct uprobe_consumer *self, struct pt_regs *regs)
 {
@@ -52,7 +28,7 @@ static int gbp_handler(struct uprobe_consumer *self, struct pt_regs *regs)
 		goto out;
 	}
 	slot = ffz(gbp_s->bp_slots);
-	if (slot >= MAX_ENTRY_SLOTS) {
+	if (slot >= GBP_MAX_ENTRY_SLOTS) {
 		pr_err("No free slots #2\n");
 		goto out;
 	}
@@ -96,7 +72,7 @@ static int global_bp_release(struct inode *inode, struct file *file)
 	struct gbp_bp *bp, *tmp;
 
 	/* no gbp_s->mutex because we are the last one left */
-	list_for_each_entry_safe(bp, tmp, &gbp_s->list, node) {
+	list_for_each_entry_safe(bp, tmp, &gbp_s->bp_list, node) {
 		uprobe_unregister(bp->inode, bp->offset, &bp->uc);
 		iput(bp->inode);
 		list_del(&bp->node);
@@ -114,6 +90,9 @@ static int global_bp_release(struct inode *inode, struct file *file)
 		wake_up_process(task);
 		put_task_struct(task);
 	}
+
+	list_del(&gbp_s->node);
+
 	kfree(gbp_s);
 	return 0;
 }
@@ -279,7 +258,7 @@ static int global_bp_add(struct gbp_session *gbp,
 		pr_err("%s(%d) %d\n", __func__, __LINE__, ret);
 		goto err_uprobe;
 	}
-	list_add(&bp->node, &gbp->list);
+	list_add(&bp->node, &gbp->bp_list);
 	bp->gbp_s = gbp;
 	mutex_unlock(&gbp->mutex);
 	fdput(f);
@@ -302,7 +281,7 @@ static int global_bp_remove(struct gbp_session *gbp_s, unsigned int bp_id)
 
 	mutex_lock(&gbp_s->mutex);
 
-	list_for_each_entry_safe(bp, tmp, &gbp_s->list, node) {
+	list_for_each_entry_safe(bp, tmp, &gbp_s->bp_list, node) {
 		if (bp->bp_id == bp_id) {
 			uprobe_unregister(bp->inode, bp->offset, &bp->uc);
 			iput(bp->inode);
@@ -362,10 +341,12 @@ SYSCALL_DEFINE1(gbp_session_create, unsigned int, flags)
 	if (!gbp_s)
 		return -ENOMEM;
 
-	INIT_LIST_HEAD(&gbp_s->list);
+	INIT_LIST_HEAD(&gbp_s->bp_list);
 	mutex_init(&gbp_s->mutex);
 	spin_lock_init(&gbp_s->entry_lock);
 	init_waitqueue_head(&gbp_s->waitq);
+
+	list_add(&gbp_s->node, &gbp_sessions);
 
 	fd = anon_inode_getfd("[gbp session]", &global_bp_fops, gbp_s, f_flags);
 	if (fd < 0)
